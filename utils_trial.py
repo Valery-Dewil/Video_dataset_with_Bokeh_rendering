@@ -3,7 +3,6 @@ from gblurs import G
 import iio
 import numpy as np
 from scipy.ndimage import gaussian_filter
-from scipy.interpolate import interp1d
 import torch
 
 
@@ -130,7 +129,7 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
 
 
 
-def compose_image(background, foreground_list, mask_list, sigma):
+def compose_image(background, initial_mask, foreground_list, mask_list, delta_list, sigma):
     H,W,_ = background.shape
 
     # Blur the background
@@ -146,7 +145,7 @@ def compose_image(background, foreground_list, mask_list, sigma):
     all_in_focus = background.copy()
     with_Bokeh = blurred_bg.copy()
 
-    for foreground, mask in zip(foreground_list, mask_list):
+    for foreground, mask, delta in zip(foreground_list, mask_list, delta_list):
         # all in focus
         all_in_focus = all_in_focus*(1-mask) + foreground*mask
 
@@ -154,11 +153,24 @@ def compose_image(background, foreground_list, mask_list, sigma):
         with_Bokeh = with_Bokeh*(1-mask) + foreground*mask
 
     # composed mask  
-    Mask = np.sum(np.array(mask_list), axis=0).clip(0,1)
+    #Mask = np.sum(np.array(mask_list), axis=0).clip(0,1)
+    Mask = compose_mask(initial_mask, mask_list, delta_list)
 
     return all_in_focus, with_Bokeh, Mask, sigma
 
+def compose_mask(initial_mask, mask_list, delta_list):
+    mask_list = np.array(mask_list)
+    delta_list = np.array(delta_list)
+    N,H,W,C = mask_list.shape
+    print(H,W,C)
+    Mask = initial_mask.copy()
+    max_delta=0
+    for i in range(N):
+        max_delta = np.max([max_delta, delta_list[i]])
+        #Mask = Mask + (mask_list[i]*delta_list[i] + mask_list[i+1]*delta_list[i+1]).clip(0, max_delta)
+        Mask = (Mask + mask_list[i]*delta_list[i]).clip(0,max_delta)
 
+    return Mask
 
 
 def update_lists(fg_list, mask_list, foreground, mask,start_y, start_x, H, W, h, w):
@@ -201,134 +213,9 @@ def read_mask(path, threshold=2):
 
 
 
-def zig_zag_borders_spiky(mask, threshold=100, length=10):
-    H,W,_ = mask.shape
-    if np.any(mask[0,:]):
-        r = np.random.randint(length)
-        # if the non masked part intercept this line, look where the non masked part is.
-        for i in range(W):
-            if np.min(mask[0,i])>threshold: # in pixel i, there is non masked part.
-                j=0 #look which length in the vertical direction. Take the minimum between this length and a fix length given in parameter.
-                while np.min(mask[j,i])>threshold and j<=length:
-                    j = j + 1
-                # in this vertical direction, erode the mask randomly
-                r = np.array([r + np.random.randint(2)-1]).clip(0,length).item()
-                if r != 0:
-                    mask[:r, i] = 0
 
-    if np.any(mask[-1,:]):
-        r = np.random.randint(length)
-        for i in range(W):
-            if np.min(mask[-1,i])>threshold: 
-                j=-1
-                while np.min(mask[j,i])>threshold and -j<=length:
-                    j = j - 1
-                r = np.array([r + np.random.randint(2)-1]).clip(0,length).item()
-                if r != 0:
-                    mask[-r:, i] = 0
-
-    if np.any(mask[:,0]):
-        r = np.random.randint(length)
-        for i in range(H):
-            if np.min(mask[i,0])>threshold: 
-                j=1
-                while np.min(mask[i,j])>threshold and j<=length:
-                    j = j + 1
-                r = np.array([r + np.random.randint(2)-1]).clip(0,length).item()
-                if r != 0:
-                    mask[i, :r] = 0
-
-    if np.any(mask[:,-1]):
-        r = np.random.randint(length)
-        for i in range(H):
-            if np.min(mask[i,-1])>threshold: 
-                j=-1
-                while np.min(mask[i,j])>threshold and -j<=length:
-                    j = j - 1
-                #r = np.random.randint(-j)
-                r = np.array([r + np.random.randint(2)-1]).clip(0,length).item()
-                if r != 0:
-                    mask[i, -r:] = 0
-
-    return mask
-
-#def zig_zag_borders(mask, threshold=100, length=10, smoothness=5):
-def zig_zag_borders(mask, threshold=100, length=10, smoothness=20):
-    H,W,_ = mask.shape
-    if np.any(mask[0,:]):  #the straight line is on the top
-        # find the coordinate where the line starts and ends
-        start, end = 0,W-1
-        while np.min(mask[0, start]<threshold):
-            start = start+1
-        while np.min(mask[0, end]<threshold):
-            end = end-1
-
-        coords = np.linspace(start, end, end - start + 1)
-        control_x = np.linspace(start, end, smoothness)
-        control_y = np.random.randint(1, length + 1, size=smoothness)
-
-        interp_curve = interp1d(control_x, control_y, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < H:
-                mask[0:offset, pos] = 0
-
-    if np.any(mask[-1,:]): # the straight line is on the bottom
-        # find the coordinate where the line starts and ends
-        start, end = 0,W-1
-        while np.min(mask[-1, start]<threshold):
-            start = start+1
-        while np.min(mask[-1, end]<threshold):
-            end = end-1
-
-        coords = np.linspace(start, end, end - start + 1)
-        control_x = np.linspace(start, end, smoothness)
-        control_y = np.random.randint(1, length + 1, size=smoothness)
-
-        interp_curve = interp1d(control_x, control_y, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < H:
-                mask[-offset:, pos] = 0
-
-    if np.any(mask[:,0]):
-        # find the coordinate where the line starts and ends
-        start, end = 0,H-1
-        while np.min(mask[start,0]<threshold):
-            start = start+1
-        while np.min(mask[end,0]<threshold):
-            end = end-1
-
-        coords = np.linspace(start, end, end - start + 1)
-        control_y = np.linspace(start, end, smoothness)
-        control_x = np.random.randint(1, length + 1, size=smoothness)
-
-        interp_curve = interp1d(control_y, control_x, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < W:
-                mask[pos, :offset] = 0
-
-    if np.any(mask[:,-1]):
-        start, end = 0,H-1
-        while np.min(mask[start,-1]<threshold):
-            start = start+1
-        while np.min(mask[end,-1]<threshold):
-            end = end-1
-
-        coords = np.linspace(start, end, end - start + 1)
-        control_y = np.linspace(start, end, smoothness)
-        control_x = np.random.randint(1, length + 1, size=smoothness)
-
-        interp_curve = interp1d(control_y, control_x, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < W:
-                mask[pos, -offset:] = 0
-
-
-    return mask
+def scale_initial_mask(mask):
+    m,M = mask.min(), mask.max()
+    delta = np.random.rand()/3
+    result = (1-delta)*(mask-M)/(m-M)
+    return result, delta

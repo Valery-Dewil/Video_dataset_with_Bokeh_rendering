@@ -173,6 +173,7 @@ def compose_mask(initial_mask, mask_list, delta_list):
     return Mask
 
 
+
 def update_lists(fg_list, mask_list, foreground, mask,start_y, start_x, H, W, h, w):
 
         Foreground, Mask = np.zeros((H,W,3), dtype=np.float32), np.zeros((H,W,3), dtype=np.float32)

@@ -3,8 +3,14 @@ from gblurs import G
 import iio
 import numpy as np
 from scipy.ndimage import gaussian_filter
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, griddata, interpn
 import torch
+from torch import nn
+from torch.nn import functional as F
+import os
+from torch.autograd import Variable
+
+np.random.seed(2025)
 
 
 
@@ -78,6 +84,10 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
     1. Crop the img in a rectangle image where there is no complete line or column equal to 0.
     2. Resize the image and the mask so that it is not greater than __ratio__ (for instance 1/3) of the h and w. The h and w come from the background image
     """
+    # Ensure the mask has 3 channels (convention, because some datasets have 3 channels mask)
+    if mask.shape[-1] == 1:
+        mask  = np.repeat(mask, 3, axis=-1)
+
     # isolate the foreground object
     object_img = img*mask
 
@@ -95,8 +105,10 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
         l = l-1
 
     # crop zeros lines and columns
+    print("before: ", object_img.shape, mask.shape)
     object_img   = object_img[i:k, j:l]
     mask_cropped = mask[      i:k, j:l]
+    print("after: ", object_img.shape, mask_cropped.shape)
 
     # if dimensions already fit the wanted ratio, we can return
     ratio=(np.random.rand()*(max_ratio[0]-min_ratio[0])+min_ratio[0], np.random.rand()*(max_ratio[1]-min_ratio[1])+min_ratio[1])
@@ -113,8 +125,8 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
         if antialiasing:
             object_img = G('borelli', object_img, 0.5*np.sqrt(ratio**2-1))
         # scale the image by ratio and return them
-        object_img   = torch.nn.functional.interpolate(torch.Tensor(object_img  ).permute(0,1,2).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
-        mask_cropped = torch.nn.functional.interpolate(torch.Tensor(mask_cropped).permute(0,1,2).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
+        object_img   = torch.nn.functional.interpolate(torch.Tensor(object_img  ).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
+        mask_cropped = torch.nn.functional.interpolate(torch.Tensor(mask_cropped).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
     else:                                                #resize in the y-axis dominates
         #the ratio should be taken into account in the y-axis instead:
         ratio = (k-i) / max_size_y   # np.ceil((k-i) / max_size_y)
@@ -130,7 +142,7 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
 
 
 
-def compose_image(background, foreground_list, mask_list, sigma):
+def compose_image(background, initial_mask, foreground_list, mask_list, delta_list, sigma):
     H,W,_ = background.shape
 
     # Blur the background
@@ -146,7 +158,7 @@ def compose_image(background, foreground_list, mask_list, sigma):
     all_in_focus = background.copy()
     with_Bokeh = blurred_bg.copy()
 
-    for foreground, mask in zip(foreground_list, mask_list):
+    for foreground, mask, delta in zip(foreground_list, mask_list, delta_list):
         # all in focus
         all_in_focus = all_in_focus*(1-mask) + foreground*mask
 
@@ -154,10 +166,24 @@ def compose_image(background, foreground_list, mask_list, sigma):
         with_Bokeh = with_Bokeh*(1-mask) + foreground*mask
 
     # composed mask  
-    Mask = np.sum(np.array(mask_list), axis=0).clip(0,1)
+    #Mask = np.sum(np.array(mask_list), axis=0).clip(0,1)
+    Mask = compose_mask(initial_mask, mask_list, delta_list)
 
     return all_in_focus, with_Bokeh, Mask, sigma
 
+def compose_mask(initial_mask, mask_list, delta_list):
+    mask_list = np.array(mask_list)
+    delta_list = np.array(delta_list)
+    N,H,W,C = mask_list.shape
+    print(H,W,C)
+    Mask = initial_mask.copy()
+    max_delta=0
+    for i in range(N):
+        max_delta = np.max([max_delta, delta_list[i]])
+        #Mask = Mask + (mask_list[i]*delta_list[i] + mask_list[i+1]*delta_list[i+1]).clip(0, max_delta)
+        Mask = (Mask + mask_list[i]*delta_list[i]).clip(0,max_delta)
+
+    return Mask
 
 
 
@@ -332,3 +358,240 @@ def zig_zag_borders(mask, threshold=100, length=10, smoothness=20):
 
 
     return mask
+
+
+
+
+
+def create_flow(H, W, theta, tx, ty):
+    """
+    H,W = shape of the image
+    theta = rotation angle (in degree)
+    tx, ty = translation parameters
+    """
+
+    # Create mesh grid of coordinates
+    y, x = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+
+    # Convert angle to radians
+    theta = theta * np.pi / 180
+
+    # Compute center of the image
+    cx, cy = W / 2, H / 2
+
+    # Shift coordinates to the center
+    x_shifted = x - cx
+    y_shifted = y - cy
+
+    # Apply rotation
+    x_rot = np.cos(theta) * x_shifted - np.sin(theta) * y_shifted
+    y_rot = np.sin(theta) * x_shifted + np.cos(theta) * y_shifted
+
+    # Shift back from center and apply translation
+    x_new = x_rot + cx + tx
+    y_new = y_rot + cy + ty
+
+    # Flow is the difference between current coordinates and new coordinates
+    flow = np.zeros((H, W, 2), dtype=np.float32)
+    flow[..., 0] = x - x_new  # vx
+    flow[..., 1] = y - y_new  # vy
+
+    return flow
+
+
+
+def apply_rotation_translation(u, theta, tx, ty):
+    h, w = u.shape[:2]
+    flow = create_flow(h, w, theta, tx, ty)
+    return warp(u, flow), flow
+
+
+
+def scale_initial_mask(mask):
+    m,M = mask.min(), mask.max()
+    delta = np.random.rand()/3
+    result = (1-delta)*(mask-M)/(m-M)
+    return result, delta
+
+
+
+
+
+
+
+
+### FUNCTIONS FOR INTERPOLATION AND WARPING
+
+def cubic_interpolation(A, B, C, D, x):
+    a,b,c,d = A.size()
+    x = x.view(a,1,c,d).repeat(1,b,1,1)
+    return B + 0.5*x*(C - A + x*(2.*A - 5.*B + 4.*C - D + x*(3.*(B - C) + D - A)))
+
+def bicubic_interpolation_slow(x, vgrid):
+    B, C, H, W = x.size()
+    if B>0:
+        output = torch.cat( [bicubic_interpolation(x[i:(i+1),:,:,:], vgrid[i:(i+1),:,:,:]) for i in range(B)], 0)
+    else:
+        output = bicubic_interpolation(x, vgrid)
+    return output
+
+def bicubic_interpolation(im, grid):
+    B, C, H, W = im.size()
+    assert B == 1, "For the moment, this interpolation only works for B=1."
+
+    x0 = torch.floor(grid[0, 0, :, :] - 1).long()
+    y0 = torch.floor(grid[0, 1, :, :] - 1).long()
+    x1 = x0 + 1
+    y1 = y0 + 1
+    x2 = x0 + 2
+    y2 = y0 + 2
+    x3 = x0 + 3
+    y3 = y0 + 3
+
+    x0 = x0.clamp(0, W-1)
+    y0 = y0.clamp(0, H-1)
+    x1 = x1.clamp(0, W-1)
+    y1 = y1.clamp(0, H-1)
+    x2 = x2.clamp(0, W-1)
+    y2 = y2.clamp(0, H-1)
+    x3 = x3.clamp(0, W-1)
+    y3 = y3.clamp(0, H-1)
+
+    A = cubic_interpolation(im[:, :, y0, x0], im[:, :, y1, x0], im[:, :, y2, x0],
+                                 im[:, :, y3, x0], grid[:, 1, :, :] - torch.floor(grid[:, 1, :, :]))
+    B = cubic_interpolation(im[:, :, y0, x1], im[:, :, y1, x1], im[:, :, y2, x1],
+                                 im[:, :, y3, x1], grid[:, 1, :, :] - torch.floor(grid[:, 1, :, :]))
+    C = cubic_interpolation(im[:, :, y0, x2], im[:, :, y1, x2], im[:, :, y2, x2],
+                                 im[:, :, y3, x2], grid[:, 1, :, :] - torch.floor(grid[:, 1, :, :]))
+    D = cubic_interpolation(im[:, :, y0, x3], im[:, :, y1, x3], im[:, :, y2, x3],
+                                 im[:, :, y3, x3], grid[:, 1, :, :] - torch.floor(grid[:, 1, :, :]))
+    return cubic_interpolation(A, B, C, D, grid[:, 0, :, :] - torch.floor(grid[:, 0, :, :]))
+
+
+def warp(x, flow, interp='bicubic'):
+    """
+    Differentiably warp a tensor according to the given optical flow.
+
+    Args:
+        x    : numpy array of dimension [H, W, 3], image to be warped.
+        flow : numpy array of dimension [H, W, 2], optical flow
+        inter: str, can be 'nearest', 'bilinear' or 'bicubic'
+    
+    Returns:
+        y   : numpy array of dimension [H, W, 3], image warped according to flow
+    """
+    x    = torch.Tensor(x   ).permute(2,0,1).unsqueeze(0).cuda()
+    flow = torch.Tensor(flow).permute(2,0,1).unsqueeze(0).cuda()
+    _, C, H, W = x.size()
+    yy, xx = torch.meshgrid(torch.arange(H, device=x.device),
+                            torch.arange(W, device=x.device))
+
+    xx, yy = map(lambda x: x.view(1,1,H,W), [xx,yy])
+
+    grid = torch.cat((xx, yy), 1).float()
+    vgrid = Variable(grid) + flow.to(x.device)
+
+    # scale grid to [-1,1]
+    vgrid[:, 0, :, :] = 2.0*vgrid[:, 0, :, :]/(W-1) - 1.0
+    vgrid[:, 1, :, :] = 2.0*vgrid[:, 1, :, :]/(H-1) - 1.0
+    mask = (vgrid[:, 0, :, :] >= -1) * (vgrid[:, 0, :, :] <= 1) *\
+           (vgrid[:, 1, :, :] >= -1) * (vgrid[:, 1, :, :] <= 1)
+    vgrid = vgrid.permute(0, 2, 3, 1)
+    output = nn.functional.grid_sample(x, vgrid, padding_mode="zeros",
+                                       mode=interp, align_corners=True)
+
+    return output.detach().cpu().numpy().squeeze().transpose(1,2,0)
+
+
+
+
+def random_float(m,M):  
+    """
+    Returns a random float number in [m,M]
+    """
+    return np.random.rand()*(M-m) + m
+
+
+
+
+def crop_biggest_rectangle(all_in_focus, bokeh, mask, flows, size_should_be_multiple_of=1):
+    """
+    The research of the black border will be done on the images all_on_focus, but the same crops will be applied to all the images (the mask, the bokeh, the flows)
+    """
+    N,H,W,C = all_in_focus.shape
+    # Crop parameters
+    y1, y2 = 0,H-1
+    x1, x2 = 0,W-1
+    
+    for p in range(N):
+        # Create mask of non-black pixels
+        black_border_mask = np.any(all_in_focus[p] != [0, 0, 0], axis=2)
+
+        # Find rows and columns where mask is True
+        rows = np.any(black_border_mask, axis=1)
+        cols = np.any(black_border_mask, axis=0)
+
+        y_min, y_max = np.where(rows)[0][[0, -1]]
+        x_min, x_max = np.where(cols)[0][[0, -1]]
+        if y_min > y1:
+            y1 = y_min
+        if y_max < y2:
+            y2 = y_max
+        if x_min > x1:
+            x1 = x_min
+        if x_max < x2:
+            x2 = x_max
+
+        # Ensure that the crop size is a multiple of the desired value
+        if (y2-y1) % size_should_be_multiple_of != 0:
+            y1 = y1 + (y2-y1)%size_should_be_multiple_of
+        if (x2-x1) % size_should_be_multiple_of != 0:
+            x1 = x1 + (x2-x1)%size_should_be_multiple_of
+
+    # Add +1 to x_max and y_max and return all the dataset, after a crop
+    return all_in_focus[:, y1:y2+1, x1:x2+1], bokeh[:, y1:y2+1, x1:x2+1], mask[:, y1:y2+1, x1:x2+1], flows[:, y1:y2+1, x1:x2+1]
+
+
+
+
+def update_delta_list(delta_list, delta, mask_list):
+    """ 
+    Update the liste of depth (delta) of foreground object. The goal is that the foregournd objects can move (in the z-axis) from frame to frame.
+    However, if they overlap, the one which is in front of the other remains in front of the other!
+    """
+    nb_objects = len(mask_list)
+
+    for index in range(nb_objects):
+        delta_list[index] = np.clip(delta_list[index] + random_float(-delta/3, delta/3), 1-delta, 1)
+
+    return delta_list
+    
+
+    #distance   = np.argsort(np.array(delta_list)) #distance of each foreground object
+
+    #
+    #for index in range(nb_objects):
+    #    if mask_list[index] * mask_list
+    #    delta_list[index] = np.clip(delta_list[index] + random_float(-delta/3, delta/3), 1-delta, 1)
+
+
+    #
+    ##1st case: nothing overlap. Each object is free to move forward or backward in the z-axis
+    #if np.max(np.prod(np.array(mask_list), axis=0)) == 0:
+    #    for index in range(nb_objects):
+    #        delta_list[index] = np.clip(delta_list[index] + random_float(-delta/3, delta/3), 1-delta, 1)
+    ##2nd case: objects overlap
+    #else:
+    #    if mask_list[0] * mask_list[1] == 0  and mask_list[0] * mask_list[2] == 0: #the object 0 is not overlapping any other object
+    #        delta_list[0] = np.clip(delta_list[0] + random_float(-delta/3, delta/3), 1-delta, 1)
+    #    if mask_list[1] * mask_list[0] == 0  and mask_list[1] * mask_list[2] == 0: #the object 1 is not overlapping any other object
+    #        delta_list[1] = np.clip(delta_list[1] + random_float(-delta/3, delta/3), 1-delta, 1)
+    #    if mask_list[2] * mask_list[0] == 0  and mask_list[2] * mask_list[1] == 0: #the object 2 is not overlapping any other object
+    #        delta_list[2] = np.clip(delta_list[2] + random_float(-delta/3, delta/3), 1-delta, 1)
+    #    if np.max(mask_list[0]*mask_list[1]*mask_list[2]) > 0: #all objects overlap
+    #        distance = np.argsort(np.array(delta_list))
+
+
+
+
+    #return delta_list

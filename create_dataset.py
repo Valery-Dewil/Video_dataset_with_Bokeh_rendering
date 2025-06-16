@@ -121,9 +121,11 @@ if __name__ == "__main__":
         print("c1")
 
         ALL_IN_FOCUS, BOKEH, MASK, FLOWS = [], [], [], [] 
+        # first frames
+        all_in_focus_0, bokeh_0, mask_0, sigma_0 = compose_image(background, initial_mask, foreground_list, mask_list, delta_list, args.sigma)
         for p in range(args.nb_frames):
             # Update the crop rectangle
-            i,j,k,l = update_crop_index(i,j,k,l,ty_bg,tx_bg)
+            #i,j,k,l = update_crop_index(i,j,k,l,ty_bg,tx_bg)
             # Compose the image
             all_in_focus, bokeh, mask, sigma = compose_image(background, initial_mask, foreground_list, mask_list, delta_list, args.sigma)
             ALL_IN_FOCUS.append(all_in_focus)

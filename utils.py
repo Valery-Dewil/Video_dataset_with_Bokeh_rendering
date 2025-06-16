@@ -174,6 +174,7 @@ def compose_image(background, initial_mask, foreground_list, mask_list, delta_li
 def compose_mask(initial_mask, mask_list, delta_list):
     mask_list = np.array(mask_list)
     delta_list = np.array(delta_list)
+    print(mask_list.shape)
     N,H,W,C = mask_list.shape
     print(H,W,C)
     Mask = initial_mask.copy()
@@ -400,10 +401,37 @@ def create_flow(H, W, theta, tx, ty):
 
 
 
+
+def pad_image_for_rotation(img):
+    H, W = img.shape[:2]
+    diag = int(np.ceil(np.sqrt(H**2 + W**2)))
+
+    pad_y = (diag - H) // 2
+    pad_x = (diag - W) // 2
+
+    padded = np.pad(
+        img,
+        ((pad_y, diag - H - pad_y), (pad_x, diag - W - pad_x), (0, 0)),
+        mode='constant',
+        constant_values=0
+    )
+    return padded, pad_x, pad_y
+
+
+
 def apply_rotation_translation(u, theta, tx, ty):
     h, w = u.shape[:2]
-    flow = create_flow(h, w, theta, tx, ty)
-    return warp(u, flow), flow
+
+    # Pad the image
+    padded_u, pad_x, pad_y = pad_image_for_rotation(u)
+    H, W = padded_u.shape[:2]
+    
+    # Compute the flow and warp
+    flow = create_flow(H, W, theta, tx, ty)
+    warped = warp(padded_u, flow)
+    
+    return warped[pad_y:pad_y+h, pad_x:pad_x+w], flow[pad_y:pad_y+h, pad_x:pad_x+w]
+
 
 
 
@@ -480,9 +508,11 @@ def warp(x, flow, interp='bicubic'):
     Returns:
         y   : numpy array of dimension [H, W, 3], image warped according to flow
     """
+    
     x    = torch.Tensor(x   ).permute(2,0,1).unsqueeze(0).cuda()
     flow = torch.Tensor(flow).permute(2,0,1).unsqueeze(0).cuda()
-    _, C, H, W = x.size()
+    _,C,H,W = x.shape
+
     yy, xx = torch.meshgrid(torch.arange(H, device=x.device),
                             torch.arange(W, device=x.device))
 

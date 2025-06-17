@@ -498,9 +498,11 @@ def pad_image_for_rotation(img):
 
 
 
-def apply_rotation_translation(u, theta, tx, ty):
+def apply_rotation_translation(u, theta, tx, ty, mask=None, return_also_transformed_mask=False):
     H,W = u.shape[:2]
     flow = create_flow_old(H, W, theta, tx, ty)
+    if return_also_transformed_mask:
+        return warp(u, flow), flow, warp(mask, flow)
     return warp(u, flow), flow
 
 
@@ -603,7 +605,7 @@ def warp(x, flow, interp='bicubic'):
     output = nn.functional.grid_sample(x, vgrid, padding_mode="zeros",
                                        mode=interp, align_corners=True)
 
-    return output.detach().cpu().numpy().squeeze().transpose(1,2,0)
+    return output[0].detach().cpu().numpy().transpose(1,2,0)
 
 
 

@@ -132,7 +132,9 @@ if __name__ == "__main__":
             MASK.append(mask)
             
             # Translate the background
-            background, flow = apply_rotation_translation(background, theta_bg, tx_bg, ty_bg)
+            print("init 1 ", initial_mask.shape)
+            background, flow, initial_mask = apply_rotation_translation(background, theta_bg, tx_bg, ty_bg, mask=initial_mask, return_also_transformed_mask=True)
+            print("init2 : ", initial_mask.shape)
             # Update the translation and rotation for next step
             ty_bg = np.clip(ty_bg+random_float(-args.max_inter_frames_acceleration, args.max_inter_frames_acceleration), -args.max_speed_translation, args.max_speed_translation)
             tx_bg = np.clip(tx_bg+random_float(-args.max_inter_frames_acceleration, args.max_inter_frames_acceleration), -args.max_speed_translation, args.max_speed_translation)

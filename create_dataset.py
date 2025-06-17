@@ -36,7 +36,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # List of images
-    list_of_background_images =        glob.glob(join(args.background      , '*'))
+    list_of_background_images = sorted(glob.glob(join(args.background      , '*')))
     list_of_foreground_images = sorted(glob.glob(join(args.foreground      , '*')))
     list_of_masks             = sorted(glob.glob(join(args.alpha_matte_mask, '*')))
     list_of_depthMaps         = sorted(glob.glob(join(args.DepthPro_mask   , '*')))

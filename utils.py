@@ -364,7 +364,7 @@ def zig_zag_borders(mask, threshold=100, length=10, smoothness=20):
 
 
 
-def create_flow(H, W, theta, tx, ty):
+def create_flow_old(H, W, theta, tx, ty):
     """
     H,W = shape of the image
     theta = rotation angle (in degree)
@@ -394,10 +394,80 @@ def create_flow(H, W, theta, tx, ty):
 
     # Flow is the difference between current coordinates and new coordinates
     flow = np.zeros((H, W, 2), dtype=np.float32)
-    flow[..., 0] = x - x_new  # vx
-    flow[..., 1] = y - y_new  # vy
+    #flow[..., 0] = x - x_new  # vx
+    #flow[..., 1] = y - y_new  # vy
+    flow[..., 0] = x_new - x  # vx
+    flow[..., 1] = y_new - y  # vy
 
     return flow
+
+
+def create_flow(H, W, theta, tx, ty):
+    """
+    H,W = shape of the image
+    theta = rotation angle (in degree)
+    tx, ty = translation parameters
+    """
+
+    # Convert angle to radians
+    theta = theta * np.pi / 180
+
+    # Compute size of new canvas (diagonal)
+    diag = int(np.ceil(np.sqrt(H**2 + W**2)))
+    H, W = diag, diag
+
+    # Centers
+    cx, cy = W/2, H/2
+
+    # Create grid for new canvas
+    y, x = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+
+    # Shift coordinates to center of new image
+    x_shifted = x - cx 
+    y_shifted = y - cy 
+
+    # Apply rotation
+    x_rot = np.cos(theta) * x_shifted - np.sin(theta) * y_shifted
+    y_rot = np.sin(theta) * x_shifted + np.cos(theta) * y_shifted
+
+    # Shift back from center and apply translation
+    x_new = x_rot + cx + tx
+    y_new = y_rot + cy + ty
+
+    # Flow is the difference between current coordinates and new coordinates
+    flow = np.zeros((H, W, 2), dtype=np.float32)
+    #flow[..., 0] = x - x_new  # vx
+    #flow[..., 1] = y - y_new  # vy
+    flow[..., 0] = x_new - x  # vx
+    flow[..., 1] = y_new - y  # vy
+
+    return flow
+
+
+
+
+
+def apply_rotation_translation_with_flow(u, theta, tx=0, ty=0):
+    H, W = u.shape[:2]
+    flow = create_flow(H, W, theta, tx, ty)
+
+    # You must place the original image in the center of a padded canvas
+    diag = flow.shape[0]  # flow is (diag, diag, 2)
+    pad_y = (diag - H) // 2
+    pad_x = (diag - W) // 2
+    
+    # Pad original image into center of new canvas
+    u_padded = np.zeros((diag, diag, 3), dtype=u.dtype)
+    u_padded[pad_y:pad_y+H, pad_x:pad_x+W] = u
+
+    # Warp using your custom function
+    warped = warp(u_padded, flow)
+
+    return u_padded, warped, flow
+
+
+
+
 
 
 
@@ -420,17 +490,11 @@ def pad_image_for_rotation(img):
 
 
 def apply_rotation_translation(u, theta, tx, ty):
-    h, w = u.shape[:2]
+    H,W = u.shape[:2]
+    flow = create_flow_old(H, W, theta, tx, ty)
+    return warp(u, flow), flow
 
-    # Pad the image
-    padded_u, pad_x, pad_y = pad_image_for_rotation(u)
-    H, W = padded_u.shape[:2]
-    
-    # Compute the flow and warp
-    flow = create_flow(H, W, theta, tx, ty)
-    warped = warp(padded_u, flow)
-    
-    return warped[pad_y:pad_y+h, pad_x:pad_x+w], flow[pad_y:pad_y+h, pad_x:pad_x+w]
+
 
 
 

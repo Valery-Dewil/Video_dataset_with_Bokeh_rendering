@@ -10,7 +10,7 @@ from torch.nn import functional as F
 import os
 from torch.autograd import Variable
 
-np.random.seed(2025)
+#np.random.seed(2025)
 
 
 
@@ -280,85 +280,94 @@ def zig_zag_borders_spiky(mask, threshold=100, length=10):
     return mask
 
 #def zig_zag_borders(mask, threshold=100, length=10, smoothness=5):
-def zig_zag_borders(mask, threshold=100, length=10, smoothness=20):
-    H,W,_ = mask.shape
-    if np.any(mask[0,:]):  #the straight line is on the top
-        # find the coordinate where the line starts and ends
-        start, end = 0,W-1
-        while np.min(mask[0, start]<threshold):
-            start = start+1
-        while np.min(mask[0, end]<threshold):
-            end = end-1
+def zig_zag_borders(mask, threshold=0.1, length=10, smoothness=20):
+    try:
+        H,W,_ = mask.shape
+        if np.any(mask[0,:]>threshold):  #the straight line is on the top
+            # find the coordinate where the line starts and ends
+            start, end = 0,W-1
+            while np.min(mask[0, start]<threshold) and start < W-smoothness-1:
+                start = start+1
+            while np.min(mask[0, end]<threshold) and end > start:
+                end = end-1
 
-        coords = np.linspace(start, end, end - start + 1)
-        control_x = np.linspace(start, end, smoothness)
-        control_y = np.random.randint(1, length + 1, size=smoothness)
+            coords = np.linspace(start, end, end - start + 1)
+            control_x = np.linspace(start, end, smoothness)
+            control_y = np.random.randint(1, length + 1, size=smoothness)
 
-        interp_curve = interp1d(control_x, control_y, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < H:
-                mask[0:offset, pos] = 0
+            interp_curve = interp1d(control_x, control_y, kind='cubic', fill_value='extrapolate')
+            offsets = np.clip(interp_curve(coords).astype(int), 1, length)
+            for i, offset in enumerate(offsets):
+                pos = start + i
+                if offset < H:
+                    mask[0:offset, pos] = 0
 
-    if np.any(mask[-1,:]): # the straight line is on the bottom
-        # find the coordinate where the line starts and ends
-        start, end = 0,W-1
-        while np.min(mask[-1, start]<threshold):
-            start = start+1
-        while np.min(mask[-1, end]<threshold):
-            end = end-1
+        if np.any(mask[-1,:]>threshold): # the straight line is on the bottom
+            # find the coordinate where the line starts and ends
+            start, end = 0,W-1
+            while np.min(mask[-1, start]<threshold) and start < W-smoothness-1:
+                start = start+1
+            while np.min(mask[-1, end]<threshold) and end > start:
+                end = end-1
 
-        coords = np.linspace(start, end, end - start + 1)
-        control_x = np.linspace(start, end, smoothness)
-        control_y = np.random.randint(1, length + 1, size=smoothness)
+            coords = np.linspace(start, end, end - start + 1)
+            control_x = np.linspace(start, end, smoothness)
+            control_y = np.random.randint(1, length + 1, size=smoothness)
 
-        interp_curve = interp1d(control_x, control_y, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < H:
-                mask[-offset:, pos] = 0
+            interp_curve = interp1d(control_x, control_y, kind='cubic', fill_value='extrapolate')
+            offsets = np.clip(interp_curve(coords).astype(int), 1, length)
+            for i, offset in enumerate(offsets):
+                pos = start + i
+                if offset < H:
+                    mask[-offset:, pos] = 0
 
-    if np.any(mask[:,0]):
-        # find the coordinate where the line starts and ends
-        start, end = 0,H-1
-        while np.min(mask[start,0]<threshold):
-            start = start+1
-        while np.min(mask[end,0]<threshold):
-            end = end-1
+        if np.any(mask[:,0]>threshold):
+            # find the coordinate where the line starts and ends
+            start, end = 0,H-1
+            while np.min(mask[start,0]<threshold) and start < H-smoothness-1:
+                start = start+1
+            while np.min(mask[end,0]<threshold) and end > start:
+                end = end-1
 
-        coords = np.linspace(start, end, end - start + 1)
-        control_y = np.linspace(start, end, smoothness)
-        control_x = np.random.randint(1, length + 1, size=smoothness)
+            coords = np.linspace(start, end, end - start + 1)
+            control_y = np.linspace(start, end, smoothness)
+            control_x = np.random.randint(1, length + 1, size=smoothness)
 
-        interp_curve = interp1d(control_y, control_x, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < W:
-                mask[pos, :offset] = 0
+            interp_curve = interp1d(control_y, control_x, kind='cubic', fill_value='extrapolate')
+            offsets = np.clip(interp_curve(coords).astype(int), 1, length)
+            for i, offset in enumerate(offsets):
+                pos = start + i
+                if offset < W:
+                    mask[pos, :offset] = 0
 
-    if np.any(mask[:,-1]):
-        start, end = 0,H-1
-        while np.min(mask[start,-1]<threshold):
-            start = start+1
-        while np.min(mask[end,-1]<threshold):
-            end = end-1
+        if np.any(mask[:,-1]>threshold):
+            start, end = 0,H-1
+            while np.min(mask[start,-1]<threshold) and start < H-smoothness-1:
+                start = start+1
+            while np.min(mask[end,-1]<threshold) and end > start:
+                end = end-1
 
-        coords = np.linspace(start, end, end - start + 1)
-        control_y = np.linspace(start, end, smoothness)
-        control_x = np.random.randint(1, length + 1, size=smoothness)
+            coords = np.linspace(start, end, end - start + 1)
+            control_y = np.linspace(start, end, smoothness)
+            control_x = np.random.randint(1, length + 1, size=smoothness)
 
-        interp_curve = interp1d(control_y, control_x, kind='cubic', fill_value='extrapolate')
-        offsets = np.clip(interp_curve(coords).astype(int), 1, length)
-        for i, offset in enumerate(offsets):
-            pos = start + i
-            if offset < W:
-                mask[pos, -offset:] = 0
+            interp_curve = interp1d(control_y, control_x, kind='cubic', fill_value='extrapolate')
+            offsets = np.clip(interp_curve(coords).astype(int), 1, length)
+            for i, offset in enumerate(offsets):
+                pos = start + i
+                if offset < W:
+                    mask[pos, -offset:] = 0
 
 
-    return mask
+        return mask
+    except:
+        return mask
+        #iio.write("/mnt/adisk/dewil/dummy/PROBLEMATIC_MASK.tif", mask)
+        #print(np.any(mask[0,:]),np.any( mask[-1,:]),np.any(mask[:,0]), np.any(mask[:,-1]))
+        #print(coords)
+        #print(control_y)
+        #print(control_x)
+        #exit()
 
 
 

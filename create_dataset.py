@@ -5,11 +5,11 @@ import numpy as np
 from os import makedirs
 from os.path import join, isdir
 from scipy.ndimage import gaussian_filter
-from utils import translate, resize, compose_image, update_lists, update_crop_index, read_mask, scale_initial_mask, apply_rotation_translation, random_float, crop_biggest_rectangle, update_delta_list
+from utils import translate, resize, compose_image, update_lists, update_crop_index, read_mask, scale_initial_mask, zig_zag_borders, apply_rotation_translation, random_float, crop_biggest_rectangle, update_delta_list
 import torch
 
 
-np.random.seed(2025)
+#np.random.seed(2025)
 
 
 
@@ -29,9 +29,9 @@ if __name__ == "__main__":
     parser.add_argument("--nb_videos", type=int, default=1, help='number of videos we want to generate')
     parser.add_argument("--nb_frames", type=int, default=3, help='number of frames to generate')
     parser.add_argument("--max_speed_translation", type=int, default=15, help='Max number of pixels for a translation')
-    parser.add_argument("--max_angle_rotation", type=float, default=45, help='Max angle for the rotation')
+    parser.add_argument("--max_angle_rotation", type=float, default=5, help='Max angle for the rotation')
     parser.add_argument("--max_inter_frames_acceleration", type=int, default=3, help='Max difference of number of pixels for a translation between two contiguous frames (to have a more or less continuous motion without drastic and unrealistic acceleration and deceleration)')
-    parser.add_argument("--max_rotation_acceleration", type=int, default=10, help='Max difference of angle for a rotation between two contiguous frames (to have a more or less continuous motion without drastic and unrealistic acceleration and deceleration)')
+    parser.add_argument("--max_rotation_acceleration", type=int, default=2, help='Max difference of angle for a rotation between two contiguous frames (to have a more or less continuous motion without drastic and unrealistic acceleration and deceleration)')
 
     args = parser.parse_args()
 
@@ -64,7 +64,6 @@ if __name__ == "__main__":
         # Set starting crop rectangle
         i,j,k,l = 0,0,0,0 # crop to do at each border to avoid black triangles
         #try:    
-        print("c0")
 
         # Create a list of foreground object and mask (1,2, or 3 objects)
         foreground_list, mask_list, delta_list = [], [], []
@@ -77,7 +76,7 @@ if __name__ == "__main__":
         p = np.random.randint(nb_foreground_images)
         foreground = iio.read(list_of_foreground_images[p])
         mask       = read_mask(list_of_masks[p])
-        print(foreground.shape, mask.shape)
+        mask = zig_zag_borders(mask)
         delta_list.append(np.random.rand()*delta+1-delta)
         foreground, mask = resize(foreground, mask, H,W)
         h,w,_ = foreground.shape
@@ -86,7 +85,6 @@ if __name__ == "__main__":
         ty_foregrounds.append(random_float(-args.max_speed_translation, args.max_speed_translation)) #translation in y axis
         tx_foregrounds.append(random_float(-args.max_speed_translation, args.max_speed_translation)) #translation in x axis
         theta_foregrounds.append(random_float(-args.max_angle_rotation, args.max_angle_rotation   )) #rotation
-        print("c11")
         
         # Second object
         #if random > 0.2:
@@ -94,6 +92,7 @@ if __name__ == "__main__":
             p = np.random.randint(nb_foreground_images)
             foreground = iio.read(list_of_foreground_images[p])
             mask       = read_mask(list_of_masks[p])
+            mask = zig_zag_borders(mask)
             delta_list.append(np.random.rand()*delta+1-delta)
             foreground, mask = resize(foreground, mask, H,W)
             h,w,_ = foreground.shape
@@ -109,6 +108,7 @@ if __name__ == "__main__":
                 p = np.random.randint(nb_foreground_images)
                 foreground = iio.read(list_of_foreground_images[p])
                 mask       = read_mask(list_of_masks[p])
+                mask = zig_zag_borders(mask)
                 delta_list.append(np.random.rand()*delta+1-delta)
                 foreground, mask = resize(foreground, mask, H,W)
                 h,w,_ = foreground.shape
@@ -118,7 +118,6 @@ if __name__ == "__main__":
                 tx_foregrounds.append(random_float(-args.max_speed_translation, args.max_speed_translation)) #translation in x axis
                 theta_foregrounds.append(random_float(-args.max_angle_rotation, args.max_angle_rotation   )) #rotation
         
-        print("c1")
 
         ALL_IN_FOCUS, BOKEH, MASK, FLOWS = [], [], [], [] 
         # first frames
@@ -131,7 +130,6 @@ if __name__ == "__main__":
             ALL_IN_FOCUS.append(all_in_focus)
             BOKEH.append(bokeh)
             MASK.append(mask)
-            print("c2")
             
             # Translate the background
             background, flow = apply_rotation_translation(background, theta_bg, tx_bg, ty_bg)
@@ -167,7 +165,6 @@ if __name__ == "__main__":
             theta_foregrounds = new_theta_foregrounds
 
 
-        print("c3")
         
         # Ensure that the crop size will be a multiple of 8
         if (H-k-i) % 8 != 0:
@@ -180,7 +177,8 @@ if __name__ == "__main__":
         #MASK         = np.array(MASK        )[:  , i:H-k, j:W-l]*255
         #FLOWS        = np.array(FLOWS       )[:-1, i:H-k, j:W-l]
 
-        ALL_IN_FOCUS, BOKEH, MASK, FLOWS = crop_biggest_rectangle(np.array(ALL_IN_FOCUS), np.array(BOKEH), np.array(MASK)*255, np.array(FLOWS))
+        #ALL_IN_FOCUS, BOKEH, MASK, FLOWS = crop_biggest_rectangle(np.array(ALL_IN_FOCUS), np.array(BOKEH), np.array(MASK)*255, np.array(FLOWS))
+        ALL_IN_FOCUS, BOKEH, MASK, FLOWS = np.array(ALL_IN_FOCUS), np.array(BOKEH), np.array(MASK)*255, np.array(FLOWS)
 
 
 
@@ -193,7 +191,6 @@ if __name__ == "__main__":
             makedirs(join(args.output_bokeh_masks , '%04d'%video))
         if not isdir(join(args.output_flows       , '%04d'%video)):
             makedirs(join(args.output_flows       , '%04d'%video))
-        print("c4")
         
         for p in range(args.nb_frames-1):
             iio.write(join(args.output_all_in_focus, '%04d/%03d.png'%(video,p)), ALL_IN_FOCUS[p])

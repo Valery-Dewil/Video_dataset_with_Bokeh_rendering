@@ -5,7 +5,7 @@ import numpy as np
 from os import makedirs
 from os.path import join, isdir
 from scipy.ndimage import gaussian_filter
-from utils_v2 import translate, resize, compose_image, update_foreground_lists, update_crop_index, read_mask, scale_initial_mask, zig_zag_borders, apply_rotation_translation, random_float, crop_biggest_rectangle, update_delta_list
+from utils_v2 import translate, resize, compose_image, update_foreground_lists, update_crop_index, read_mask, scale_DepthPro_mask, zig_zag_borders, apply_rotation_translation, random_float, crop_biggest_rectangle, update_delta_list
 import torch
 
 
@@ -33,6 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_angle_rotation", type=float, default=5, help='Max angle for the rotation')
     parser.add_argument("--max_inter_frames_acceleration", type=int, default=3, help='Max difference of number of pixels for a translation between two contiguous frames (to have a more or less continuous motion without drastic and unrealistic acceleration and deceleration)')
     parser.add_argument("--max_rotation_acceleration", type=int, default=2, help='Max difference of angle for a rotation between two contiguous frames (to have a more or less continuous motion without drastic and unrealistic acceleration and deceleration)')
+    parser.add_argument("--ratio_foreground_space", type=float, default=0.33, help='Ratio (=fraction) of space where the foreground objects live. By default, it is 1/3. This means that the depth from 1 to 1-0.33=0.66 contains the foreground, while the depth from 0.66 to 0 contains the background')
 
     args = parser.parse_args()
 
@@ -55,7 +56,9 @@ if __name__ == "__main__":
         i = np.random.randint(nb_background_images) #choose randomly a background image
         background = iio.read(list_of_background_images[i])
         DepthPro_mask_BG = iio.read(list_of_depthMaps[i])
-        DepthPro_mask_BG, delta = scale_initial_mask(DepthPro_mask_BG)
+
+        delta = np.random.rand() * args.ratio_foreground_space
+        DepthPro_mask_BG = scale_DepthPro_mask(DepthPro_mask_BG, 1-delta, 0)
         print("initial delta is ", delta)
         H,W,_ = background.shape
         # Sample the translation and rotation parameters (for the background)
@@ -90,7 +93,7 @@ if __name__ == "__main__":
             ty_fg[   0, foreground_object] = random_float(-args.max_speed_translation, args.max_speed_translation)
             tx_fg[   0, foreground_object] = random_float(-args.max_speed_translation, args.max_speed_translation)
             theta_fg[0, foreground_object] = random_float(-args.max_angle_rotation   , args.max_angle_rotation   )
-            delta_fg[0, foreground_object] = random_float(1-delta                    , delta                     )
+            delta_fg[0, foreground_object] = random_float(1-delta                    , 1                         )
             for t in range(1, args.nb_frames-1):
                 ty_fg[   t, foreground_object]    = np.clip(ty_fg[t-1, foreground_object]+random_float(-args.max_inter_frames_acceleration, args.max_inter_frames_acceleration), -args.max_speed_translation, args.max_speed_translation)
                 tx_fg[   t, foreground_object]    = np.clip(tx_fg[t-1, foreground_object]+random_float(-args.max_inter_frames_acceleration, args.max_inter_frames_acceleration), -args.max_speed_translation, args.max_speed_translation)
@@ -143,15 +146,9 @@ if __name__ == "__main__":
 
         ALL_IN_FOCUS, BOKEH, MASK, FLOWS = np.zeros((args.nb_frames, H, W, 3), dtype=np.float32), np.zeros((args.nb_frames, H, W, 3), dtype=np.float32), np.zeros((args.nb_frames, H, W, 3), dtype=np.float32), np.zeros((args.nb_frames-1, H, W, 2), dtype=np.float32)
 
+        print("initial delta is ", delta)
+        print(delta_fg)
 
-        print(ALL_IN_FOCUS.shape)
-        print(BOKEH.shape)
-        print(MASK.shape)
-        print(FLOWS.shape)
-        print(background.shape)
-        print(np.array(foreground_list).shape)
-        print(np.array(mask_list).shape)
-        print(np.array(depth_pro_mask_list).shape)
 
         # First frames
         ALL_IN_FOCUS[0], BOKEH[0], MASK[0], sigma = compose_image(background, DepthPro_mask_BG, foreground_list, mask_list, depth_pro_mask_list, delta_fg[0], args.sigma)
@@ -162,13 +159,16 @@ if __name__ == "__main__":
             #################i,j,k,l = update_crop_index(i,j,k,l,ty_bg,tx_bg)
 
             # Translate the background
-            print(tx_bg)
-            print(tx_bg[:p])
-
-            rotated_background, flow, DepthPro_mask_BG = apply_rotation_translation(background, theta_bg[:p].sum(), tx_bg[:p].sum(), ty_bg[:p].sum(), mask=DepthPro_mask_BG, return_also_transformed_mask=True)
+            rotated_background, flow, rotated_DepthPro_mask_BG = apply_rotation_translation(background, theta_bg[:p].sum(), tx_bg[:p].sum(), ty_bg[:p].sum(), mask=DepthPro_mask_BG, return_also_transformed_mask=True)
             
             # Translate the foreground objects
             new_foreground_list, new_mask_list, new_depth_pro_mask_list = [], [], []
+
+            for h in range(3):
+                iio.write("/mnt/adisk/dewil/dummy/workdir_dir/v2/object%1d-%1d.tif"%(h,p), np.array(foreground_list)[h])
+                iio.write("/mnt/adisk/dewil/dummy/workdir_dir/v2/mask%1d-%1d.tif"%(h,p), np.array(mask_list)[h])
+                iio.write("/mnt/adisk/dewil/dummy/workdir_dir/v2/depthProt%1d-%1d.tif"%(h,p), np.array(depth_pro_mask_list)[h])
+
             for (fg, Mask, DepthProMask, ty, tx, theta) in zip(foreground_list, mask_list, depth_pro_mask_list, ty_fg[:p].sum(axis=0), tx_fg[:p].sum(axis=0), theta_fg[:p].sum(axis=0)):
                 transformed, _ = apply_rotation_translation(fg, theta, tx, ty)
                 new_foreground_list.append(transformed)
@@ -187,7 +187,7 @@ if __name__ == "__main__":
             # Compose the image
             #print(delta_fg)
             #print(delta_fg[:p+1])
-            ALL_IN_FOCUS[p], BOKEH[p], MASK[p], sigma = compose_image(rotated_background, DepthPro_mask_BG, new_foreground_list, new_mask_list, new_depth_pro_mask_list, delta_fg[:p+1].sum(axis=0), args.sigma)
+            ALL_IN_FOCUS[p], BOKEH[p], MASK[p], sigma = compose_image(rotated_background, rotated_DepthPro_mask_BG, new_foreground_list, new_mask_list, new_depth_pro_mask_list, delta_fg[p], args.sigma)
             FLOWS[p-1] = flow
 
         
@@ -230,9 +230,9 @@ if __name__ == "__main__":
         for p in range(args.nb_frames-1):
             iio.write(join(args.output_all_in_focus, '%04d/%03d.png'%(video,p)), ALL_IN_FOCUS[p])
             iio.write(join(args.output_bokeh_frames, '%04d/%03d.png'%(video,p)), BOKEH[       p])
-            iio.write(join(args.output_bokeh_masks , '%04d/%03d.png'%(video,p)), MASK[        p])
+            iio.write(join(args.output_bokeh_masks , '%04d/%03d.tif'%(video,p)), MASK[        p])
             iio.write(join(args.output_flows       , '%04d/%03d.flo'%(video,p)), FLOWS[       p])
         iio.write(join(args.output_all_in_focus, '%04d/%03d.png'%(video,args.nb_frames-1)), ALL_IN_FOCUS[args.nb_frames-1])
         iio.write(join(args.output_bokeh_frames, '%04d/%03d.png'%(video,args.nb_frames-1)), BOKEH[       args.nb_frames-1])
-        iio.write(join(args.output_bokeh_masks , '%04d/%03d.png'%(video,args.nb_frames-1)), MASK[        args.nb_frames-1])
+        iio.write(join(args.output_bokeh_masks , '%04d/%03d.tif'%(video,args.nb_frames-1)), MASK[        args.nb_frames-1])
         

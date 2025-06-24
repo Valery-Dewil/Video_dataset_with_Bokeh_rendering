@@ -149,7 +149,7 @@ def resize(img, mask, depth_pro_mask, h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/
 
 
 
-def compose_image(background, initial_mask, foreground_list, mask_list, depth_pro_mask_list, delta_list, sigma):
+def compose_image(background, background_depth_pro_mask, foreground_list, mask_list, depth_pro_mask_list, delta_list, sigma):
     H,W,_ = background.shape
 
     # Blur the background
@@ -174,22 +174,34 @@ def compose_image(background, initial_mask, foreground_list, mask_list, depth_pr
 
     # composed mask  
     #Mask = np.sum(np.array(mask_list), axis=0).clip(0,1)
-    Mask = compose_mask(initial_mask, mask_list, depth_pro_mask_list, delta_list)
+    Mask = compose_mask(background_depth_pro_mask, mask_list, depth_pro_mask_list, delta_list)
 
     return all_in_focus, with_Bokeh, Mask, sigma
 
-def compose_mask(initial_mask, mask_list, depth_pro_mask_list, delta_list):
+def compose_mask(background_depth_pro_mask, mask_list, depth_pro_mask_list, delta_list, foreground_depth=0.1):
     mask_list = np.array(mask_list)
     depth_pro_mask_list = np.array(depth_pro_mask_list)
     #####################"delta_list = np.array(delta_list)
     N,H,W,C = mask_list.shape
-    Mask = initial_mask.copy()
+    Mask = background_depth_pro_mask.copy()
     max_delta=0
     print("N = ", N, ", for delta, it is ", delta_list.shape)
-    for i in range(N):
-        max_delta = np.max([max_delta, delta_list[i]])
-        #Mask = Mask + (mask_list[i]*delta_list[i] + mask_list[i+1]*delta_list[i+1]).clip(0, max_delta)
-        Mask = (Mask + mask_list[i]*depth_pro_mask_list[i]*delta_list[i]).clip(0,max_delta)
+    for n in range(N):
+        max_delta = np.max([max_delta, delta_list[n]+foreground_depth/2])
+        max_delta = np.min([max_delta, 1])
+        ##################Mask = Mask + (mask_list[n]*delta_list[n] + mask_list[n+1]*delta_list[n+1]).clip(0, max_delta)
+        #print('delta ', delta_list[n])
+        #print('min ', (mask_list[n]*scale_DepthPro_mask(depth_pro_mask_list[n], delta_list[n]-foreground_depth/2, delta_list[n]+foreground_depth/2)).min())
+        #print('max ', (mask_list[n]*scale_DepthPro_mask(depth_pro_mask_list[n], delta_list[n]-foreground_depth/2, delta_list[n]+foreground_depth/2)).max())
+        #Mask = (Mask + mask_list[n]*scale_DepthPro_mask(depth_pro_mask_list[n], delta_list[n]-foreground_depth/2, delta_list[n]+foreground_depth/2))#.clip(0,max_delta)
+       
+
+        scaled_DepthPro_mask = scale_DepthPro_mask(depth_pro_mask_list[n], delta_list[n]-foreground_depth/2, delta_list[n]+foreground_depth/2)
+        print(Mask.shape, mask_list[n].shape, scaled_DepthPro_mask.shape)
+        for i in range(H):
+            for j in range(W):
+                if Mask[i,j] < mask_list[n,i,j,0]*scaled_DepthPro_mask[i,j,0]:
+                    Mask[i,j] = (mask_list[n,i,j,0]*scaled_DepthPro_mask[i,j,0]).clip(0,max_delta)
 
     return Mask
 
@@ -538,12 +550,12 @@ def apply_rotation_translation(u, theta, tx, ty, mask=None, return_also_transfor
 
 
 
-def scale_initial_mask(mask):
+def scale_DepthPro_mask(mask, new_min, new_max):
     m,M = mask.min(), mask.max()
-    #delta = np.random.rand()/3 #première idée, j'avais le foreground dans les premiers 33%
-    delta = np.random.rand()*0.5
-    result = (1-delta)*(mask-M)/(m-M)
-    return result, delta
+    ########delta = np.random.rand()*0.5
+    #result = (1-delta)*(mask-M)/(m-M)
+    result = ( new_max*(mask-m) + new_min*(M-mask) ) / (M-m)
+    return result
 
 
 
@@ -891,6 +903,9 @@ def crop_biggest_rectangle(all_in_focus, bokeh, mask, flows, size_should_be_mult
     
     for p in range(N):
         i, j = crop_square_around_center(all_in_focus[p])
+        k, l = crop_square_around_center(mask        [p])
+        i, j = np.min([i,k]), np.min([j,l]) #maybe we should crop the frames, maybe the mask? We take the smallest rectangle so that there is no black border for sure in any of these two options
+
 
         if H//2-i > y1:
             y1 = H//2-i

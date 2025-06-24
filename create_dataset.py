@@ -9,7 +9,7 @@ from utils import translate, resize, compose_image, update_lists, update_crop_in
 import torch
 
 
-#np.random.seed(2025)
+np.random.seed(2025)
 
 
 
@@ -21,6 +21,7 @@ if __name__ == "__main__":
     parser.add_argument("--foreground", type=str, default="", help='path to foreground frames (C type)')
     parser.add_argument("--alpha_matte_mask", type=str, default="", help='path to mask (alpha-matting) of foreground frames (C type)')
     parser.add_argument("--DepthPro_mask", type=str, default="", help='path to mask (DepthPro) of foreground frames (C type)')
+    parser.add_argument("--foregroundDepthPro_mask", type=str, default="", help='path to mask (DepthPro) of foreground frames (C type)')
     parser.add_argument("--sigma", type=float, nargs='+', default=(4.5,8.0), help='value(s) of sigma for the Gaussian blur. If single value, this value. If 2 values, a random value is sampled between these two values')
     parser.add_argument("--output_all_in_focus", type=str, default="", help='path to the output of all-in-focus frames')
     parser.add_argument("--output_bokeh_masks", type=str, default="", help='path to the output of Bokeh mask')
@@ -39,6 +40,7 @@ if __name__ == "__main__":
     list_of_background_images = sorted(glob.glob(join(args.background      , '*')))
     list_of_foreground_images = sorted(glob.glob(join(args.foreground      , '*')))
     list_of_masks             = sorted(glob.glob(join(args.alpha_matte_mask, '*')))
+    list_of_DepthProMasks     = sorted(glob.glob(join(args.foregroundDepthPro_mask, '*')))
     list_of_depthMaps         = sorted(glob.glob(join(args.DepthPro_mask   , '*')))
     nb_background_images = len(list_of_background_images)
     nb_foreground_images = len(list_of_foreground_images)
@@ -55,6 +57,7 @@ if __name__ == "__main__":
         background = iio.read(list_of_background_images[i])
         initial_mask = iio.read(list_of_depthMaps[i])
         initial_mask, delta = scale_initial_mask(initial_mask)
+        print("initial delta is ", delta)
         H,W,_ = background.shape
         # Sample a first translation
         ty_bg = random_float(-args.max_speed_translation, args.max_speed_translation) #translation in y axis
@@ -66,7 +69,7 @@ if __name__ == "__main__":
         #try:    
 
         # Create a list of foreground object and mask (1,2, or 3 objects)
-        foreground_list, mask_list, delta_list = [], [], []
+        foreground_list, mask_list, depth_pro_mask_list, delta_list = [], [], [], []
         ty_foregrounds, tx_foregrounds = [], [] #the translation for each foreground object
         theta_foregrounds              = []     #the rotation    for each foreground object
         
@@ -77,11 +80,12 @@ if __name__ == "__main__":
         foreground = iio.read(list_of_foreground_images[p])
         mask       = read_mask(list_of_masks[p])
         mask = zig_zag_borders(mask)
+        DepthPro_mask = iio.read(list_of_DepthProMask[p])
         delta_list.append(np.random.rand()*delta+1-delta)
-        foreground, mask = resize(foreground, mask, H,W)
+        foreground, mask, DepthPro_mask = resize(foreground, mask, Depthpro_mask, H,W)
         h,w,_ = foreground.shape
         start_y, start_x = np.random.randint(H-h), np.random.randint(W-w)
-        foreground_list, mask_list, isupdated = update_lists(foreground_list, mask_list, foreground, mask, start_y, start_x, H, W, h, w)
+        foreground_list, mask_list, depth_pro_mask_list, isupdated = update_lists(foreground_list, mask_list, depth_pro_mask_list, foreground, mask, DepthPro_mask, start_y, start_x, H, W, h, w)
         ty_foregrounds.append(random_float(-args.max_speed_translation, args.max_speed_translation)) #translation in y axis
         tx_foregrounds.append(random_float(-args.max_speed_translation, args.max_speed_translation)) #translation in x axis
         theta_foregrounds.append(random_float(-args.max_angle_rotation, args.max_angle_rotation   )) #rotation
@@ -93,11 +97,12 @@ if __name__ == "__main__":
             foreground = iio.read(list_of_foreground_images[p])
             mask       = read_mask(list_of_masks[p])
             mask = zig_zag_borders(mask)
+            DepthPro_mask = iio.read(list_of_DepthProMask[p])
             delta_list.append(np.random.rand()*delta+1-delta)
-            foreground, mask = resize(foreground, mask, H,W)
+            foreground, mask, DepthPro_mask = resize(foreground, mask, Depthpro_mask, H,W)
             h,w,_ = foreground.shape
             start_y, start_x = np.random.randint(H-h), np.random.randint(W-w)
-            foreground_list, mask_list, isupdated = update_lists(foreground_list, mask_list, foreground, mask, start_y, start_x, H, W, h, w)
+            foreground_list, mask_list, depth_pro_mask_list, isupdated = update_lists(foreground_list, mask_list, depth_pro_mask_list, foreground, mask, DepthPro_mask, start_y, start_x, H, W, h, w)
             ty_foregrounds.append(random_float(-args.max_speed_translation, args.max_speed_translation)) #translation in y axis
             tx_foregrounds.append(random_float(-args.max_speed_translation, args.max_speed_translation)) #translation in x axis
             theta_foregrounds.append(random_float(-args.max_angle_rotation, args.max_angle_rotation   )) #rotation
@@ -109,8 +114,9 @@ if __name__ == "__main__":
                 foreground = iio.read(list_of_foreground_images[p])
                 mask       = read_mask(list_of_masks[p])
                 mask = zig_zag_borders(mask)
+                DepthPro_mask = iio.read(list_of_DepthProMask[p])
                 delta_list.append(np.random.rand()*delta+1-delta)
-                foreground, mask = resize(foreground, mask, H,W)
+                foreground_list, mask_list, depth_pro_mask_list, isupdated = update_lists(foreground_list, mask_list, depth_pro_mask_list, foreground, mask, DepthPro_mask, start_y, start_x, H, W, h, w)
                 h,w,_ = foreground.shape
                 start_y, start_x = np.random.randint(H-h), np.random.randint(W-w)
                 foreground_list, mask_list, isupdated = update_lists(foreground_list, mask_list, foreground, mask, start_y, start_x, H, W, h, w)
@@ -121,12 +127,12 @@ if __name__ == "__main__":
 
         ALL_IN_FOCUS, BOKEH, MASK, FLOWS = [], [], [], [] 
         # first frames
-        all_in_focus_0, bokeh_0, mask_0, sigma_0 = compose_image(background, initial_mask, foreground_list, mask_list, delta_list, args.sigma)
+        #all_in_focus_0, bokeh_0, mask_0, sigma_0 = compose_image(background, initial_mask, foreground_list, mask_list, delta_list, args.sigma)
         for p in range(args.nb_frames):
             # Update the crop rectangle
             #i,j,k,l = update_crop_index(i,j,k,l,ty_bg,tx_bg)
             # Compose the image
-            all_in_focus, bokeh, mask, sigma = compose_image(background, initial_mask, foreground_list, mask_list, delta_list, args.sigma)
+            all_in_focus, bokeh, mask, sigma = compose_image(background, initial_mask, foreground_list, mask_list, depth_pro_mask_list, delta_list, args.sigma)
             ALL_IN_FOCUS.append(all_in_focus)
             BOKEH.append(bokeh)
             MASK.append(mask)
@@ -141,13 +147,15 @@ if __name__ == "__main__":
             theta_bg = np.clip(theta_bg+random_float(-args.max_rotation_acceleration, args.max_rotation_acceleration), -args.max_angle_rotation, args.max_angle_rotation)
 
             # Translate the foreground object
-            new_foreground_list, new_mask_list, new_start_y_list, new_start_x_list, new_ty_foregrounds, new_tx_foregrounds, new_theta_foregrounds = [], [], [], [], [], [], []
-            for (fg, Mask, ty, tx, theta) in zip(foreground_list, mask_list, ty_foregrounds, tx_foregrounds, theta_foregrounds):
+            new_foreground_list, new_mask_list, new_depth_pro_mask_list, new_start_y_list, new_start_x_list, new_ty_foregrounds, new_tx_foregrounds, new_theta_foregrounds = [], [], [], [], [], [], [], []
+            for (fg, Mask, DepthProMask, ty, tx, theta) in zip(foreground_list, mask_list, depth_pro_mask_list, ty_foregrounds, tx_foregrounds, theta_foregrounds):
                 transformed, _ = apply_rotation_translation(fg, theta, tx, ty)
                 new_foreground_list.append(transformed)
                 transformed, flow_fg = apply_rotation_translation(Mask, theta, tx, ty)
                 flow[transformed[:,:,:2]>2/255] = flow_fg[transformed[:,:,:2]>2/255]
                 new_mask_list.append(transformed)
+                transformed, _ = apply_rotation_translation(DepthProMask, theta, tx, ty)
+                new_depth_pro_mask_list.append(transformed)
                 new_ty_foregrounds.append(np.clip(ty+random_float(-args.max_inter_frames_acceleration, args.max_inter_frames_acceleration), -args.max_speed_translation, args.max_speed_translation))
                 new_tx_foregrounds.append(np.clip(tx+random_float(-args.max_inter_frames_acceleration, args.max_inter_frames_acceleration), -args.max_speed_translation, args.max_speed_translation))
                 new_theta_foregrounds.append(np.clip(theta+random_float(-args.max_rotation_acceleration, args.max_rotation_acceleration), -args.max_angle_rotation, args.max_angle_rotation))
@@ -162,6 +170,7 @@ if __name__ == "__main__":
             # Update the list of foreground objects and masks
             foreground_list = new_foreground_list
             mask_list = new_mask_list
+            depth_pro_mask_list = new_depth_pro_mask_list
             ty_foregrounds    = new_ty_foregrounds
             tx_foregrounds    = new_tx_foregrounds
             theta_foregrounds = new_theta_foregrounds
@@ -179,8 +188,8 @@ if __name__ == "__main__":
         #MASK         = np.array(MASK        )[:  , i:H-k, j:W-l]*255
         #FLOWS        = np.array(FLOWS       )[:-1, i:H-k, j:W-l]
 
-        #ALL_IN_FOCUS, BOKEH, MASK, FLOWS = crop_biggest_rectangle(np.array(ALL_IN_FOCUS), np.array(BOKEH), np.array(MASK)*255, np.array(FLOWS))
-        ALL_IN_FOCUS, BOKEH, MASK, FLOWS = np.array(ALL_IN_FOCUS), np.array(BOKEH), np.array(MASK)*255, np.array(FLOWS)
+        ALL_IN_FOCUS, BOKEH, MASK, FLOWS = crop_biggest_rectangle(np.array(ALL_IN_FOCUS), np.array(BOKEH), np.array(MASK)*255, np.array(FLOWS))
+        #ALL_IN_FOCUS, BOKEH, MASK, FLOWS = np.array(ALL_IN_FOCUS), np.array(BOKEH), np.array(MASK)*255, np.array(FLOWS)
 
 
 

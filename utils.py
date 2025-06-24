@@ -78,7 +78,7 @@ def downscale(img, scale):
 
 
 
-def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=True):
+def resize(img,mask, depth_pro_mask, h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=True):
     """
     Take a foreground image img and the corresponding mask.
     1. Crop the img in a rectangle image where there is no complete line or column equal to 0.
@@ -87,6 +87,8 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
     # Ensure the mask has 3 channels (convention, because some datasets have 3 channels mask)
     if mask.shape[-1] == 1:
         mask  = np.repeat(mask, 3, axis=-1)
+    if depth_pro_mask.shape[-1] == 1:
+        depth_pro_mask  = np.repeat(depth_pro_mask, 3, axis=-1)
 
     # isolate the foreground object
     object_img = img*mask
@@ -108,6 +110,7 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
     print("before: ", object_img.shape, mask.shape)
     object_img   = object_img[i:k, j:l]
     mask_cropped = mask[      i:k, j:l]
+    depth_pro_mask_cropped = mask[      i:k, j:l]
     print("after: ", object_img.shape, mask_cropped.shape)
 
     # if dimensions already fit the wanted ratio, we can return
@@ -127,6 +130,7 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
         # scale the image by ratio and return them
         object_img   = torch.nn.functional.interpolate(torch.Tensor(object_img  ).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
         mask_cropped = torch.nn.functional.interpolate(torch.Tensor(mask_cropped).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
+        depth_pro_mask_cropped = torch.nn.functional.interpolate(torch.Tensor(depth_pro_mask_cropped).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
     else:                                                #resize in the y-axis dominates
         #the ratio should be taken into account in the y-axis instead:
         ratio = (k-i) / max_size_y   # np.ceil((k-i) / max_size_y)
@@ -136,13 +140,14 @@ def resize(img,mask,h,w,max_ratio=(1/2,1/2), min_ratio=(1/3,1/3), antialiasing=T
         # scale the image by ratio and return them
         object_img   = torch.nn.functional.interpolate(torch.Tensor(object_img  ).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
         mask_cropped = torch.nn.functional.interpolate(torch.Tensor(mask_cropped).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
+        depth_pro_mask_cropped = torch.nn.functional.interpolate(torch.Tensor(depth_pro_mask_cropped).permute(2,0,1).unsqueeze(0), scale_factor=1/ratio, mode='bicubic', align_corners=True).numpy().squeeze().transpose(1,2,0)
 
-    return object_img, mask_cropped
+    return object_img, mask_cropped, depth_pro_mask_cropped
     
 
 
 
-def compose_image(background, initial_mask, foreground_list, mask_list, delta_list, sigma):
+def compose_image(background, initial_mask, foreground_list, mask_list, depth_pro_mask_list, delta_list, sigma):
     H,W,_ = background.shape
 
     # Blur the background
@@ -158,7 +163,7 @@ def compose_image(background, initial_mask, foreground_list, mask_list, delta_li
     all_in_focus = background.copy()
     with_Bokeh = blurred_bg.copy()
 
-    for foreground, mask, delta in zip(foreground_list, mask_list, delta_list):
+    for foreground, mask, depth_pro_mask, delta in zip(foreground_list, mask_list, depth_pro_mask_list, delta_list):
         # all in focus
         all_in_focus = all_in_focus*(1-mask) + foreground*mask
 
@@ -167,54 +172,58 @@ def compose_image(background, initial_mask, foreground_list, mask_list, delta_li
 
     # composed mask  
     #Mask = np.sum(np.array(mask_list), axis=0).clip(0,1)
-    Mask = compose_mask(initial_mask, mask_list, delta_list)
+    Mask = compose_mask(initial_mask, mask_list, depth_pro_mask_list, delta_list)
 
     return all_in_focus, with_Bokeh, Mask, sigma
 
-def compose_mask(initial_mask, mask_list, delta_list):
+def compose_mask(initial_mask, mask_list, depth_pro_mask_list, delta_list):
     mask_list = np.array(mask_list)
-    delta_list = np.array(delta_list)
-    print(mask_list.shape)
+    depth_pro_mask_list = np.array(depth_pro_mask_list)
+    delta_list = np.array(dela_list)
     N,H,W,C = mask_list.shape
-    print(H,W,C)
     Mask = initial_mask.copy()
     max_delta=0
     for i in range(N):
         max_delta = np.max([max_delta, delta_list[i]])
         #Mask = Mask + (mask_list[i]*delta_list[i] + mask_list[i+1]*delta_list[i+1]).clip(0, max_delta)
-        Mask = (Mask + mask_list[i]*delta_list[i]).clip(0,max_delta)
+        Mask = (Mask + mask_list[i]*depth_pro_mask_list[i]*delta_list[i]).clip(0,max_delta)
 
     return Mask
 
 
 
-def update_lists(fg_list, mask_list, foreground, mask,start_y, start_x, H, W, h, w):
+def update_lists(fg_list, mask_list, depth_pro_mask_list, foreground, mask, depth_pro_mask, start_y, start_x, H, W, h, w):
 
-        Foreground, Mask = np.zeros((H,W,3), dtype=np.float32), np.zeros((H,W,3), dtype=np.float32)
+        Foreground, Mask, DepthProMask = np.zeros((H,W,3), dtype=np.float32), np.zeros((H,W,3), dtype=np.float32), np.zeros((H,W,2), dtype=np.float32)
         if start_y>H or start_y<0 or start_x>W or start_x<0:
             #we are out of the image, so we don't add this as an object anymore
-            return fg_list, mask_list, False
+            return fg_list, mask_list, depth_pro_mask_list, False
        
         #else, we copy paste the object at the good location and add it in the lists
         if start_y+h<=H:
             if start_x+w<=W:
                 Foreground[start_y:start_y+h, start_x:start_x+w] = foreground
                 Mask[      start_y:start_y+h, start_x:start_x+w] = mask
+                DepthProMask[      start_y:start_y+h, start_x:start_x+w] = depth_pro_mask
             else:
                 Foreground[start_y:start_y+h, start_x:] = foreground[:,:W-start_x]
                 Mask[      start_y:start_y+h, start_x:] = mask[     :, :W-start_x]
+                DepthProMask[      start_y:start_y+h, start_x:] = depth_pro_mask[     :, :W-start_x]
         else:
             if start_x+w<=W:
                 Foreground[start_y:, start_x:start_x+w] = foreground[:H-start_y,:]
                 Mask[      start_y:, start_x:start_x+w] = mask[      :H-start_y,:]      
+                DepthProMask[      start_y:, start_x:start_x+w] = depth_pro_mask[      :H-start_y,:]      
             else:
                 Foreground[start_y:, start_x:] = foreground[:H-start_y,:W-start_x]
                 Mask[      start_y:, start_x:] = mask[      :H-start_y,:W-start_x]      
+                DepthProMask[      start_y:, start_x:] = depth_pro_mask[      :H-start_y,:W-start_x]      
 
         fg_list.append(Foreground)
         mask_list.append(Mask)
+        depth_pro_mask_list.append(DepthProMask)
 
-        return fg_list, mask_list, True
+        return fg_list, mask_list, depth_pro_list, True
 
 
 
@@ -280,7 +289,8 @@ def zig_zag_borders_spiky(mask, threshold=100, length=10):
     return mask
 
 #def zig_zag_borders(mask, threshold=100, length=10, smoothness=5):
-def zig_zag_borders(mask, threshold=0.1, length=10, smoothness=20):
+#def zig_zag_borders(mask, threshold=0.1, length=10, smoothness=20):
+def zig_zag_borders(mask, threshold=0.1, length=20, smoothness=15):
     try:
         H,W,_ = mask.shape
         if np.any(mask[0,:]>threshold):  #the straight line is on the top
@@ -512,7 +522,8 @@ def apply_rotation_translation(u, theta, tx, ty, mask=None, return_also_transfor
 
 def scale_initial_mask(mask):
     m,M = mask.min(), mask.max()
-    delta = np.random.rand()/3
+    #delta = np.random.rand()/3 #première idée, j'avais le foreground dans les premiers 33%
+    delta = np.random.rand()*0.5
     result = (1-delta)*(mask-M)/(m-M)
     return result, delta
 
@@ -619,44 +630,45 @@ def random_float(m,M):
 
 
 
-def crop_biggest_rectangle(all_in_focus, bokeh, mask, flows, size_should_be_multiple_of=1):
-    """
-    The research of the black border will be done on the images all_on_focus, but the same crops will be applied to all the images (the mask, the bokeh, the flows)
-    """
-    N,H,W,C = all_in_focus.shape
-    # Crop parameters
-    y1, y2 = 0,H-1
-    x1, x2 = 0,W-1
-    
-    for p in range(N):
-        # Create mask of non-black pixels
-        black_border_mask = np.any(all_in_focus[p] != [0, 0, 0], axis=2)
-
-        # Find rows and columns where mask is True
-        rows = np.any(black_border_mask, axis=1)
-        cols = np.any(black_border_mask, axis=0)
-
-        y_min, y_max = np.where(rows)[0][[0, -1]]
-        x_min, x_max = np.where(cols)[0][[0, -1]]
-        if y_min > y1:
-            y1 = y_min
-        if y_max < y2:
-            y2 = y_max
-        if x_min > x1:
-            x1 = x_min
-        if x_max < x2:
-            x2 = x_max
-
-        # Ensure that the crop size is a multiple of the desired value
-        if (y2-y1) % size_should_be_multiple_of != 0:
-            y1 = y1 + (y2-y1)%size_should_be_multiple_of
-        if (x2-x1) % size_should_be_multiple_of != 0:
-            x1 = x1 + (x2-x1)%size_should_be_multiple_of
-
-    # Add +1 to x_max and y_max and return all the dataset, after a crop
-    return all_in_focus[:, y1:y2+1, x1:x2+1], bokeh[:, y1:y2+1, x1:x2+1], mask[:, y1:y2+1, x1:x2+1], flows[:, y1:y2+1, x1:x2+1]
-
-
+#def crop_biggest_rectangle(all_in_focus, bokeh, mask, flows, size_should_be_multiple_of=1):
+#    """
+#    The research of the black border will be done on the images all_on_focus, but the same crops will be applied to all the images (the mask, the bokeh, the flows)
+#    """
+#    N,H,W,C = all_in_focus.shape
+#    # Crop parameters
+#    y1, y2 = 0,H-1
+#    x1, x2 = 0,W-1
+#    
+#    for p in range(N):
+#        # Create mask of non-black pixels
+#        #black_border_mask = np.any(all_in_focus[p] != [0, 0, 0], axis=2)
+#        black_border_mask = np.any(all_in_focus[p] < [0.4, 0.4, 0.4], axis=2)
+#
+#        # Find rows and columns where mask is True
+#        rows = np.any(black_border_mask, axis=1)
+#        cols = np.any(black_border_mask, axis=0)
+#
+#        y_min, y_max = np.where(rows)[0][[0, -1]]
+#        x_min, x_max = np.where(cols)[0][[0, -1]]
+#        if y_min > y1:
+#            y1 = y_min
+#        if y_max < y2:
+#            y2 = y_max
+#        if x_min > x1:
+#            x1 = x_min
+#        if x_max < x2:
+#            x2 = x_max
+#
+#        # Ensure that the crop size is a multiple of the desired value
+#        if (y2-y1) % size_should_be_multiple_of != 0:
+#            y1 = y1 + (y2-y1)%size_should_be_multiple_of
+#        if (x2-x1) % size_should_be_multiple_of != 0:
+#            x1 = x1 + (x2-x1)%size_should_be_multiple_of
+#
+#    # Add +1 to x_max and y_max and return all the dataset, after a crop
+#    return all_in_focus[:, y1:y2+1, x1:x2+1], bokeh[:, y1:y2+1, x1:x2+1], mask[:, y1:y2+1, x1:x2+1], flows[:, y1:y2+1, x1:x2+1]
+#
+#
 
 
 def update_delta_list(delta_list, delta, mask_list):
@@ -665,7 +677,6 @@ def update_delta_list(delta_list, delta, mask_list):
     However, if they overlap, the one which is in front of the other remains in front of the other!
     """
     nb_objects = len(mask_list)
-
     for index in range(nb_objects):
         delta_list[index] = np.clip(delta_list[index] + random_float(-delta/3, delta/3), 1-delta, 1)
 
@@ -700,3 +711,185 @@ def update_delta_list(delta_list, delta, mask_list):
 
 
     #return delta_list
+
+
+
+
+#def largest_rotated_rect(w, h, angle):
+#    """
+#    Given a rectangle of size wxh that has been rotated by 'angle' (in
+#    radians), computes the width and height of the largest possible
+#    axis-aligned rectangle within the rotated rectangle.
+#
+#    Original JS code by 'Andri' and Magnus Hoff from Stack Overflow
+#
+#    Converted to Python by Aaron Snoswell
+#    """
+#
+#    quadrant = int(math.floor(angle / (math.pi / 2))) & 3
+#    sign_alpha = angle if ((quadrant & 1) == 0) else math.pi - angle
+#    alpha = (sign_alpha % math.pi + math.pi) % math.pi
+#
+#    bb_w = w * math.cos(alpha) + h * math.sin(alpha)
+#    bb_h = w * math.sin(alpha) + h * math.cos(alpha)
+#
+#    gamma = math.atan2(bb_w, bb_w) if (w < h) else math.atan2(bb_w, bb_w)
+#
+#    delta = math.pi - alpha - gamma
+#
+#    length = h if (w < h) else w
+#
+#    d = length * math.cos(alpha)
+#    a = d * math.sin(alpha) / math.sin(delta)
+#
+#    y = a * math.cos(gamma)
+#    x = y * math.tan(gamma)
+#
+#    return (
+#        bb_w - 2 * x,
+#        bb_h - 2 * y
+#    )
+#
+
+def crop_around_center(image, width, height):
+    """
+    Given a NumPy / OpenCV 2 image, crops it to the given width and height,
+    around it's centre point
+    """
+
+    image_size = (image.shape[1], image.shape[0])
+    image_center = (int(image_size[0] * 0.5), int(image_size[1] * 0.5))
+
+    if(width > image_size[0]):
+        width = image_size[0]
+
+    if(height > image_size[1]):
+        height = image_size[1]
+
+    x1 = int(image_center[0] - width * 0.5)
+    x2 = int(image_center[0] + width * 0.5)
+    y1 = int(image_center[1] - height * 0.5)
+    y2 = int(image_center[1] + height * 0.5)
+
+    return image[y1:y2, x1:x2]
+
+
+
+
+
+def look_if_complete_black_triangle(im, i, j, border):
+    H,W,_ = im.shape
+    #coordinates of the center
+    cy,cx = H//2, W//2
+    
+    k = 0
+    result = True
+    #print("we start at : ", cy-i, cx-j)
+    if border == 'top':       
+        while cy-i-k>0 and result: 
+            #print(-(np.any(im[cy-i-k, cx-j:cx+j], axis=1)-1).sum())
+            #print(im[cy-i-k, cx-j:cx+j])
+            if -(np.any(im[cy-i-k, cx-j:cx+j], axis=1)-1).sum()<=k: #I compte the number of pixel equal to [0,0,0]
+                result=False
+            k = k+1
+            #print("next iter")
+            #print("")
+            #print("")
+
+    if border == 'bottom':       
+        while cy+i+k<H and result: 
+            if -(np.any(im[cy+i+k, cx-j:cx+j], axis=1)-1).sum()<=k: #I compte the number of pixel equal to [0,0,0]
+                result=False
+            k = k+1
+
+    if border == 'left':       
+        while cx-j-k>0 and result: 
+            if -(np.any(im[cy-i:cy+i, cx-j-k], axis=1)-1).sum()<=k: #I compte the number of pixel equal to [0,0,0]
+                result=False
+            k = k+1
+
+    if border == 'right':       
+        while cx+j+k<W and result: 
+            if -(np.any(im[cy-i:cy+i, cx+j+k], axis=1)-1).sum()<=k: #I compte the number of pixel equal to [0,0,0]
+                result=False
+            k = k+1
+
+
+    return result
+
+
+
+
+
+def crop_square_around_center(im):
+    H,W,_ = im.shape
+    #coordinates of the center
+    cy,cx = H//2, W//2
+
+    # offset from the center
+    i,j = 1,1
+  
+    Continue = True #should we continue or stop
+    while Continue and i<H//2 and j<W//2:
+        top_border    = im[cy-i, cx-j:cx+j]
+        bottom_border = im[cy+i, cx-j:cx+j]
+        left_border   = im[cy-i:cy+i, cx-j]
+        right_border  = im[cy-i:cy+i, cx+j]
+            
+        # if there is no zero in all borders, we continue to increase the square
+        if np.all(np.any(top_border, axis=1)) and np.all(np.any(bottom_border, axis=1)) and np.all(np.any(left_border, axis=1)) and np.all(np.any(right_border, axis=1)):
+            print(np.any(top_border))
+            i,j = i+1, j+1
+        # if not, we look if the border a an isole zeros (a black pixel) of if it is a full black triangle
+        else:
+            print("we enter this else")
+            if not np.all(np.any(top_border, axis=1)):
+                print("top")
+                Continue = (Continue and not look_if_complete_black_triangle(im, i, j, 'top'))
+            if Continue and not np.all(np.any(bottom_border, axis=1)):
+                print("bottom")
+                Continue = (Continue and not look_if_complete_black_triangle(im, i, j, 'bottom'))
+            if Continue and not np.all(np.any(left_border, axis=1)):
+                print("left")
+                Continue = (Continue and not look_if_complete_black_triangle(im, i, j, 'left'))
+            if Continue and not np.all(np.any(right_border, axis=1)):
+                print("right")
+                Continue = (Continue and not look_if_complete_black_triangle(im, i, j, 'right'))
+
+            i,j = i+1, j+1
+
+    return  i-1, j-1,look_if_complete_black_triangle(im, 129,129, 'top')
+
+
+
+def crop_biggest_rectangle(all_in_focus, bokeh, mask, flows, size_should_be_multiple_of=1):
+    """
+    The research of the black border will be done on the images all_on_focus, but the same crops will be applied to all the images (the mask, the bokeh, the flows)
+    """
+    N,H,W,C = all_in_focus.shape
+    # Crop parameters
+    y1, y2 = 0,H-1
+    x1, x2 = 0,W-1
+    
+    for p in range(N):
+        i, j = crop_square_around_center(all_in_focus[p])
+
+        if H//2-i > y1:
+            y1 = H//2-i
+        if H//2+i < y2:
+            y2 = H//2+i
+        if W//2-j > x1:
+            x1 = W//2-j
+        if W//2+j < x2:
+            x2 = W//2+j
+
+    # Ensure that the crop size is a multiple of the desired value
+    if (y2-y1) % size_should_be_multiple_of != 0:
+        y1 = y1 + (y2-y1)%size_should_be_multiple_of
+    if (x2-x1) % size_should_be_multiple_of != 0:
+        x1 = x1 + (x2-x1)%size_should_be_multiple_of
+
+    return all_in_focus[:, y1:y2, x1:x2], bokeh[:, y1:y2, x1:x2], mask[:, y1:y2, x1:x2], flows[:, y1:y2, x1:x2]
+
+
+
